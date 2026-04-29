@@ -24,6 +24,14 @@ function savePresets(presets) {
   } catch {}
 }
 
+// Manda mensaje al service worker
+function swMessage(data) {
+  navigator.serviceWorker?.ready.then(reg => {
+    reg.active?.postMessage(data)
+  })
+}
+
+// Audio solo cuando la pantalla ESTÁ encendida
 let sharedCtx = null
 function getCtx() {
   if (!sharedCtx || sharedCtx.state === 'closed') {
@@ -32,57 +40,38 @@ function getCtx() {
   return sharedCtx
 }
 
-function scheduleAllSounds(totalSeconds) {
+function playDone() {
   try {
     const ctx = getCtx()
     if (ctx.state === 'suspended') ctx.resume()
-    const now = ctx.currentTime
-
-    // Tick suave cada 60s
-    for (let s = 60; s < totalSeconds - 3; s += 60) {
-      const t = now + s
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.connect(gain); gain.connect(ctx.destination)
-      osc.type = 'sine'; osc.frequency.value = 440
-      gain.gain.setValueAtTime(0, t)
-      gain.gain.linearRampToValueAtTime(0.07, t + 0.01)
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
-      osc.start(t); osc.stop(t + 0.15)
-    }
-
-    // Countdown: 3, 2, 1
-    ;[3, 2, 1].forEach(countdown => {
-      const t = now + (totalSeconds - countdown)
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.connect(gain); gain.connect(ctx.destination)
-      osc.type = 'sine'; osc.frequency.value = 880
-      gain.gain.setValueAtTime(0, t)
-      gain.gain.linearRampToValueAtTime(0.25, t + 0.01)
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18)
-      osc.start(t); osc.stop(t + 0.18)
-    })
-
-    // Sonido final 5 notas
     const notes = [528, 396, 528, 440, 528]
     notes.forEach((freq, i) => {
-      const t = now + totalSeconds + i * 1.0
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
       osc.connect(gain); gain.connect(ctx.destination)
       osc.type = 'sine'; osc.frequency.value = freq
+      const t = ctx.currentTime + i * 1.0
       gain.gain.setValueAtTime(0, t)
       gain.gain.linearRampToValueAtTime(0.4, t + 0.06)
       gain.gain.exponentialRampToValueAtTime(0.001, t + 1.8)
       osc.start(t); osc.stop(t + 1.8)
     })
+    if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 600])
   } catch {}
 }
 
-function cancelScheduledSounds() {
+function playTick() {
   try {
-    if (sharedCtx) { sharedCtx.close(); sharedCtx = null }
+    const ctx = getCtx()
+    if (ctx.state === 'suspended') ctx.resume()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.connect(gain); gain.connect(ctx.destination)
+    osc.type = 'sine'; osc.frequency.value = 880
+    gain.gain.setValueAtTime(0, ctx.currentTime)
+    gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + 0.01)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18)
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.18)
   } catch {}
 }
 
@@ -102,21 +91,55 @@ export default function App() {
   const [modal, setModal] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState({ name: '', mins: '' })
+  const [notifPerm, setNotifPerm] = useState('default')
   const intervalRef = useRef(null)
   const endTimeRef = useRef(null)
+  const prevTimeRef = useRef(null) // para detectar el countdown 3-2-1
 
   useEffect(() => { savePresets(presets) }, [presets])
 
+  // Pide permiso de notificaciones al montar
+  useEffect(() => {
+    if ('Notification' in window) {
+      setNotifPerm(Notification.permission)
+    }
+  }, [])
+
+  // Escucha mensaje TIMER_DONE del service worker
+  useEffect(() => {
+    if (!navigator.serviceWorker) return
+    const handler = e => {
+      if (e.data?.type === 'TIMER_DONE') {
+        clearInterval(intervalRef.current)
+        setRunning(false)
+        setDone(true)
+        setTimeLeft(0)
+        playDone()
+      }
+    }
+    navigator.serviceWorker.addEventListener('message', handler)
+    return () => navigator.serviceWorker.removeEventListener('message', handler)
+  }, [])
+
+  // Timer basado en timestamps — no pierde tiempo aunque el JS se pause
   useEffect(() => {
     if (running) {
       intervalRef.current = setInterval(() => {
         const remaining = Math.max(0, Math.ceil((endTimeRef.current - Date.now()) / 1000))
+
+        // Countdown 3-2-1 cuando la pantalla está encendida
+        if (!document.hidden && prevTimeRef.current !== remaining && remaining <= 3 && remaining > 0) {
+          playTick()
+        }
+        prevTimeRef.current = remaining
+
         if (remaining <= 0) {
           clearInterval(intervalRef.current)
           setRunning(false)
           setDone(true)
           setTimeLeft(0)
-          if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 600])
+          // Si la pantalla estaba encendida, suena directo
+          if (!document.hidden) playDone()
           return
         }
         setTimeLeft(remaining)
@@ -127,6 +150,7 @@ export default function App() {
     return () => clearInterval(intervalRef.current)
   }, [running])
 
+  // Sincroniza cuando vuelve la pantalla
   const handleVisibility = useCallback(() => {
     if (document.hidden || !endTimeRef.current) return
     const remaining = Math.max(0, Math.ceil((endTimeRef.current - Date.now()) / 1000))
@@ -135,6 +159,7 @@ export default function App() {
       setRunning(false)
       setDone(true)
       setTimeLeft(0)
+      playDone()
     } else {
       setTimeLeft(remaining)
     }
@@ -145,9 +170,16 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [handleVisibility])
 
-  function startTimer(secs) {
+  async function requestNotifPermission() {
+    if (!('Notification' in window)) return
+    const perm = await Notification.requestPermission()
+    setNotifPerm(perm)
+  }
+
+  function startTimer(secs, label) {
     endTimeRef.current = Date.now() + secs * 1000
-    scheduleAllSounds(secs)
+    // Delega al service worker para background
+    swMessage({ type: 'TIMER_START', endTime: endTimeRef.current, label })
     setRunning(true)
   }
 
@@ -160,17 +192,18 @@ export default function App() {
     if (done) {
       const secs = selected.mins * 60
       setTimeLeft(secs); setTotal(secs); setDone(false)
-      startTimer(secs); return
+      startTimer(secs, selected.name); return
     }
     if (running) {
-      cancelScheduledSounds(); setRunning(false)
+      swMessage({ type: 'TIMER_CANCEL' })
+      setRunning(false)
     } else {
-      startTimer(timeLeft)
+      startTimer(timeLeft, selected?.name)
     }
   }
 
   function reset() {
-    cancelScheduledSounds()
+    swMessage({ type: 'TIMER_CANCEL' })
     clearInterval(intervalRef.current)
     setRunning(false); setDone(false)
     endTimeRef.current = null
@@ -217,6 +250,7 @@ export default function App() {
   const progress = total > 0 ? (total - timeLeft) / total : 0
   const dashArr = `${CIRC * progress} ${CIRC * (1 - progress)}`
   const btnLabel = done ? 'Repetir' : running ? 'Pausar' : (timeLeft < total && timeLeft > 0 ? 'Reanudar' : 'Iniciar')
+  const needsNotifPerm = 'Notification' in window && notifPerm !== 'granted'
 
   return (
     <div style={styles.root}>
@@ -225,6 +259,23 @@ export default function App() {
       </header>
 
       <main style={styles.main}>
+
+        {/* Banner de permiso de notificaciones */}
+        {needsNotifPerm && (
+          <div style={styles.notifBanner}>
+            <span style={styles.notifText}>
+              {notifPerm === 'denied'
+                ? '⚠️ Activa notificaciones en ajustes del navegador para que suene con pantalla apagada'
+                : '🔔 Activa notificaciones para que suene con pantalla apagada'}
+            </span>
+            {notifPerm !== 'denied' && (
+              <button style={styles.notifBtn} onClick={requestNotifPermission}>
+                Activar
+              </button>
+            )}
+          </div>
+        )}
+
         <div style={styles.ringWrap}>
           <svg width={260} height={260} style={{ transform: 'rotate(-90deg)' }}>
             <circle cx={130} cy={130} r={RADIUS} fill="none" stroke="var(--surface)" strokeWidth={4} />
@@ -354,6 +405,17 @@ const styles = {
     width: '100%', maxWidth: 480, padding: '32px 24px 60px',
     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 32,
   },
+  notifBanner: {
+    width: '100%', background: '#1e1c18', border: '1px solid var(--gold-dim)',
+    borderRadius: 10, padding: '12px 16px',
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+  },
+  notifText: { fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.4, flex: 1 },
+  notifBtn: {
+    background: 'var(--gold)', color: '#0f0e0d', border: 'none',
+    borderRadius: 6, fontSize: 12, padding: '7px 14px', fontWeight: 500, flexShrink: 0,
+    fontFamily: "'DM Mono', monospace",
+  },
   ringWrap: { position: 'relative', width: 260, height: 260, flexShrink: 0 },
   ringInner: {
     position: 'absolute', inset: 0,
@@ -368,14 +430,17 @@ const styles = {
   btnPrimary: {
     background: 'var(--gold)', color: '#0f0e0d', border: 'none',
     borderRadius: 8, fontSize: 13, letterSpacing: '0.08em', padding: '12px 32px', fontWeight: 400,
+    fontFamily: "'DM Mono', monospace",
   },
   btnSecondary: {
     background: 'transparent', border: '1px solid var(--border)', borderRadius: 8,
     fontSize: 13, letterSpacing: '0.08em', color: 'var(--text-dim)', padding: '12px 20px',
+    fontFamily: "'DM Mono', monospace",
   },
   btnAdd: {
     background: 'transparent', border: '1px solid var(--border)', borderRadius: 6,
     fontSize: 11, letterSpacing: '0.08em', color: 'var(--text-dim)', padding: '5px 12px',
+    fontFamily: "'DM Mono', monospace",
   },
   section: { width: '100%' },
   sectionHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
@@ -392,6 +457,7 @@ const styles = {
   iconBtn: {
     background: 'transparent', border: 'none', color: 'var(--text-muted)',
     fontSize: 15, padding: '4px 6px', borderRadius: 4,
+    fontFamily: "'DM Mono', monospace",
   },
   modalBg: {
     position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
@@ -407,6 +473,7 @@ const styles = {
   input: {
     background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 7,
     color: 'var(--text)', fontSize: 14, padding: '10px 13px', outline: 'none', width: '100%',
+    fontFamily: "'DM Mono', monospace",
   },
   modalActions: { display: 'flex', gap: 10, justifyContent: 'flex-end' },
 }
