@@ -27,7 +27,8 @@ function savePresets(presets) {
 function playDone() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)()
-    const notes = [528, 396, 528]
+    // 5 notes over ~5 seconds
+    const notes = [528, 396, 528, 440, 528]
     notes.forEach((freq, i) => {
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
@@ -35,13 +36,32 @@ function playDone() {
       gain.connect(ctx.destination)
       osc.type = 'sine'
       osc.frequency.value = freq
-      const t = ctx.currentTime + i * 0.65
+      const t = ctx.currentTime + i * 1.0
       gain.gain.setValueAtTime(0, t)
       gain.gain.linearRampToValueAtTime(0.4, t + 0.06)
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 1.3)
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 1.8)
       osc.start(t)
-      osc.stop(t + 1.3)
+      osc.stop(t + 1.8)
     })
+    // vibración
+    if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 600])
+  } catch {}
+}
+
+function playTick() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.type = 'sine'
+    osc.frequency.value = 880
+    gain.gain.setValueAtTime(0, ctx.currentTime)
+    gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + 0.01)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18)
+    osc.start(ctx.currentTime)
+    osc.stop(ctx.currentTime + 0.18)
   } catch {}
 }
 
@@ -83,6 +103,7 @@ export default function App() {
             playDone()
             return 0
           }
+          if (t <= 4) playTick()
           return t - 1
         })
       }, 1000)
