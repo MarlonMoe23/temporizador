@@ -456,7 +456,7 @@ const styles = {
   },
   presetMins: {
     fontSize: 12,
-    color: 'var(--text-muted)',
+    color: 'var(--text-dim)',
     fontFamily: "'DM Mono', monospace",
   },
   presetActions: {
