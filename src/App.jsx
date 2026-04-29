@@ -95,6 +95,7 @@ export default function App() {
   const intervalRef = useRef(null)
   const endTimeRef = useRef(null)
   const prevTimeRef = useRef(null) // para detectar el countdown 3-2-1
+  const wakeLockRef = useRef(null)
 
   useEffect(() => { savePresets(presets) }, [presets])
 
@@ -139,6 +140,7 @@ export default function App() {
           setDone(true)
           setTimeLeft(0)
           // Si la pantalla estaba encendida, suena directo
+          releaseWakeLock()
           if (!document.hidden) playDone()
           return
         }
@@ -176,10 +178,25 @@ export default function App() {
     setNotifPerm(perm)
   }
 
+  async function acquireWakeLock() {
+    try {
+      if ("wakeLock" in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request("screen")
+      }
+    } catch {}
+  }
+
+  function releaseWakeLock() {
+    try {
+      wakeLockRef.current?.release()
+      wakeLockRef.current = null
+    } catch {}
+  }
+
   function startTimer(secs, label) {
     endTimeRef.current = Date.now() + secs * 1000
-    // Delega al service worker para background
     swMessage({ type: 'TIMER_START', endTime: endTimeRef.current, label })
+    acquireWakeLock()
     setRunning(true)
   }
 
@@ -196,6 +213,7 @@ export default function App() {
     }
     if (running) {
       swMessage({ type: 'TIMER_CANCEL' })
+      releaseWakeLock()
       setRunning(false)
     } else {
       startTimer(timeLeft, selected?.name)
@@ -204,6 +222,7 @@ export default function App() {
 
   function reset() {
     swMessage({ type: 'TIMER_CANCEL' })
+    releaseWakeLock()
     clearInterval(intervalRef.current)
     setRunning(false); setDone(false)
     endTimeRef.current = null
